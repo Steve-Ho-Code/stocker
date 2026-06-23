@@ -1,0 +1,43 @@
+# This file orchestrates the services required to run the Stocker bot.
+# It starts the bot application, a PostgreSQL database, and a Redis cache.
+#
+# Usage:
+#   1. Fill in your .env file.
+#   2. Run `docker-compose up --build`
+#   3. In a separate terminal, run the database migration (first time only):
+#      `docker exec -it stocker_bot alembic upgrade head`
+
+version: '3.8'
+
+services:
+  db:
+    image: postgres:13
+    container_name: stocker_db
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: stocker
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+
+  redis:
+    image: redis:6.2-alpine
+    container_name: stocker_redis
+    ports:
+      - "6379:6379"
+
+  bot:
+    build: .
+    container_name: stocker_bot
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+
+
+
+volumes:
+  postgres_data:
