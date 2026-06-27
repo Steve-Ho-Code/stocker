@@ -17,10 +17,10 @@
 ### 2. 進階時間管理與排程 (Advanced Time Management & Scheduling)
 *   **目前狀態：** 系統目前僅支援基於固定間隔的簡單計時器。
 *   **下一步：** 實作更具彈性的時間排程機制。
-    - [ ] **精確時間觸發 (Exact Time Triggering)：** 支援在每個整點或每 10 分鐘的倍數時間點觸發 API 呼叫 (可利用 `APScheduler` 的 `CronTrigger`)。
-    - [ ] **可配置的頻率 (Configurable Frequency)：** 允許使用者設定每小時、每 30 分鐘、每 10 分鐘或每 1 分鐘觸發一次。
-    - [ ] **每日開始與結束時間 (Daily Start/End Time)：** 新增設定選項，允許配置每日開始與停止執行 API 呼叫的特定時間，避免在休市期間浪費 API 額度並防止洗版。
-    - [ ] **時區支援 (Timezone Support)：** 確保排程器使用明確的目標市場時區 (例如美股使用 `America/New_York`)，以正確處理夏令/冬令時間轉換。
+    - [x] **精確時間觸發 (Exact Time Triggering)：** 支援在每個整點或每 10 分鐘的倍數時間點觸發 API 呼叫 (可利用 `APScheduler` 的 `CronTrigger`)。
+    - [x] **可配置的頻率 (Configurable Frequency)：** 允許使用者設定每小時、每 30 分鐘、每 10 分鐘或每 1 分鐘觸發一次。
+    - [x] **每日開始與結束時間 (Daily Start/End Time)：** 新增設定選項，允許配置每日開始與停止執行 API 呼叫的特定時間，避免在休市期間浪費 API 額度並防止洗版。
+    - [x] **時區支援 (Timezone Support)：** 確保排程器使用明確的目標市場時區 (例如美股使用 `America/New_York`)，以正確處理夏令/冬令時間轉換。
 
 ### 3. 穩健的資料庫備份與還原策略
 *   **目前狀態：** 資料庫目前持久化儲存於 Docker Volume 中，綁定於主機 (host machine) 上。

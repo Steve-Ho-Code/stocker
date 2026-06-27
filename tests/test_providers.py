@@ -10,7 +10,7 @@ import httpx
 async def test_get_asset_price_success(mocker):
     """Tests the get_asset_price function in a success scenario."""
     # Mock the response object that client.get() will produce
-    mock_response = AsyncMock()
+    mock_response = MagicMock()
     mock_response.json.return_value = {
         "Global Quote": {
             "05. price": "123.45",
@@ -18,13 +18,15 @@ async def test_get_asset_price_success(mocker):
             "10. change percent": "1.00%"
         }
     }
-    mock_response.raise_for_status = AsyncMock(return_value=None)
+    mock_response.raise_for_status.return_value = None
 
     # Mock the client.get() coroutine to return the mock_response
     mock_get = AsyncMock(return_value=mock_response)
     
     # Mock the AsyncClient context manager
-    mock_client = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.__aenter__.return_value.get = mock_get
     mocker.patch('httpx.AsyncClient', return_value=mock_client)
 
@@ -44,7 +46,9 @@ async def test_get_asset_price_http_error(mocker):
     mock_get = AsyncMock(side_effect=httpx.HTTPStatusError("Error", request=MagicMock(), response=MagicMock()))
     
     # Mock the AsyncClient context manager
-    mock_client = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.__aenter__.return_value.get = mock_get
     mocker.patch("httpx.AsyncClient", return_value=mock_client)
 
@@ -58,15 +62,17 @@ async def test_get_asset_price_http_error(mocker):
 async def test_get_asset_price_no_global_quote(mocker):
     """Tests the get_asset_price function when the 'Global Quote' is missing."""
     # Mock the response object that client.get() will produce
-    mock_response = AsyncMock()
+    mock_response = MagicMock()
     mock_response.json.return_value = {"Information": "Some info"}
-    mock_response.raise_for_status = AsyncMock(return_value=None)
+    mock_response.raise_for_status.return_value = None
 
     # Mock the client.get() coroutine to return the mock_response
     mock_get = AsyncMock(return_value=mock_response)
     
     # Mock the AsyncClient context manager
-    mock_client = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.__aenter__.return_value.get = mock_get
     mocker.patch('httpx.AsyncClient', return_value=mock_client)
 
