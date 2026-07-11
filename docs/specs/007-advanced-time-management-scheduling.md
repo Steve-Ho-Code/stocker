@@ -1,176 +1,315 @@
 # Spec 007: Advanced Time Management and Scheduling
 
-**Goal:** Replace the current fixed-interval price update timer with a schedule-aware mechanism that can trigger updates on exact time boundaries, respect configured active hours, and evaluate all scheduling rules in an explicit market timezone.
+**Priority:** P0
 
-## 1. Rationale
+**Goal:** Replace the fixed-interval price update timer with a timezone-aware schedule that fires once at the start of each active window, then follows exact wall-clock boundaries while the window remains active.
 
-The bot currently schedules price updates with a simple repeating interval. This is enough for basic polling, but it does not guarantee that updates happen at predictable wall-clock times. For financial market monitoring, predictable timing matters because users expect updates near exact market-relevant boundaries, such as every 10 minutes or at the top of each hour.
+## 1. Core Model
 
-The scheduler should also avoid sending updates outside the desired daily window. This reduces unnecessary external API usage, prevents noisy channel updates during inactive hours, and makes the bot behavior easier to reason about during daylight saving time changes.
+Scheduling has three independently configurable inputs:
+
+- **Frequency:** the interval, in minutes, between recurring wall-clock boundaries.
+- **Window:** the inclusive daily time range in which scheduled updates may be sent.
+- **Timezone:** the IANA timezone used to interpret the window and all trigger times.
+
+Frequency controls recurring boundaries, the window controls trigger eligibility, and timezone provides the shared wall-clock interpretation. The active-window start has one additional role: it is an opening trigger. If the start time is not already a recurring frequency boundary, the scheduler MUST fire once at the start time and then continue at the next recurring boundary.
+
+Example:
+
+```text
+Frequency: 15 minutes
+Window: 09:33-16:00
+Timezone: America/New_York
+Sequence: 09:33, 09:45, 10:00, 10:15, ..., 15:45, 16:00
+```
+
+The opening trigger does not shift the recurring boundaries. In the example above, `09:33` does not produce `09:48`, `10:03`, and so on.
 
 ## 2. Scope
 
-This spec covers the P0 "Advanced Time Management & Scheduling" roadmap item.
-
 In scope:
 
-- Exact time triggering.
-- Configurable update frequency.
-- Daily start and end time configuration.
-- Explicit timezone support.
-- Persistence of scheduling settings.
-- Rescheduling the active background job when scheduling settings change.
+- Exact wall-clock triggering.
+- A fixed set of supported update frequencies.
+- An inclusive daily active window, including overnight windows.
+- Explicit IANA timezone support.
+- Redis-backed persistence of scheduling settings.
+- Runtime commands for updating scheduling settings.
+- Safe removal and recreation of scheduler jobs after configuration changes.
 
 Out of scope:
 
-- Full market holiday calendar support.
-- Exchange-specific early close detection.
+- Market holiday calendars.
+- Exchange-specific early closes.
 - Per-user or per-channel schedules.
-- Inline keyboard UI for scheduling settings.
-- Monitoring or alerting for scheduler health.
+- Inline keyboard scheduling UI.
+- Scheduler health monitoring and alerting.
 
-## 3. Functional Requirements
+## 3. Supported Frequencies and Boundaries
 
-### 3.1 Exact Time Triggering
+`SCHEDULE_FREQUENCY_MINUTES` MUST be one of:
 
-- The scheduler MUST trigger price update attempts on wall-clock boundaries instead of drifting relative to application startup time.
-- Supported frequencies MUST align to the following boundaries:
-    - Every 1 minute: trigger at second `00` of each minute.
-    - Every 5 minutes: trigger when the minute is divisible by `5`.
-    - Every 10 minutes: trigger when the minute is divisible by `10`.
-    - Every 15 minutes: trigger when the minute is `00`, `15`, `30`, or `45`.
-    - Every 30 minutes: trigger when the minute is `00` or `30`.
-    - Every 60 minutes: trigger when the minute is `00`.
-- The scheduled job MUST not use `first=0` behavior that sends an immediate startup update unless the current time is already a valid schedule boundary and inside the active daily window.
-- The implementation SHOULD use APScheduler cron-style scheduling, such as `CronTrigger`, because the project already depends on APScheduler through `python-telegram-bot` job queue support.
+| Frequency | Recurring wall-clock boundaries |
+|---|---|
+| `1` | Every minute at second `00` |
+| `5` | Minutes `00`, `05`, `10`, ..., `55` |
+| `10` | Minutes `00`, `10`, `20`, ..., `50` |
+| `15` | Minutes `00`, `15`, `30`, and `45` |
+| `30` | Minutes `00` and `30` |
+| `60` | Minute `00` of every hour |
 
-### 3.2 Configurable Frequency
+All other values MUST be rejected. Boundaries are calculated from the top of the hour in the configured timezone, not relative to application startup or the previous fire time.
 
-- Authorized users MUST be able to configure the update frequency.
-- The supported frequency values MUST be:
-    - `1` minute.
-    - `5` minutes.
-    - `10` minutes.
-    - `15` minutes.
-    - `30` minutes.
-    - `60` minutes.
-- Unsupported values MUST be rejected with a clear error message.
-- The existing `/set_timer` command MAY be reused for this setting, but its validation MUST change from "any positive number up to `MAX_TIMER_INTERVAL`" to the supported frequency set above.
-- The bot MUST persist the selected frequency so the setting survives application restart.
-- The bot MUST reschedule the active price update job immediately after the frequency is changed.
+Examples for a window ending at `16:00`:
 
-### 3.3 Daily Start and End Time
+| Start | Frequency | Trigger sequence |
+|---|---:|---|
+| `09:30` | `60` | `09:30`, `10:00`, `11:00`, ..., `15:00`, `16:00` |
+| `09:15` | `60` | `09:15`, `10:00`, `11:00`, ..., `15:00`, `16:00` |
+| `09:00` | `60` | `09:00`, `10:00`, `11:00`, ..., `15:00`, `16:00` |
+| `09:33` | `15` | `09:33`, `09:45`, `10:00`, ..., `15:45`, `16:00` |
+| `09:07` | `5` | `09:07`, `09:10`, `09:15`, ..., `15:55`, `16:00` |
+| `09:30` | `1` | `09:30`, `09:31`, `09:32`, ..., `15:59`, `16:00` |
 
-- The bot MUST support a daily active window for scheduled price updates.
-- The active window MUST be defined by:
-    - `SCHEDULE_START_TIME`, formatted as `HH:MM`.
-    - `SCHEDULE_END_TIME`, formatted as `HH:MM`.
-- Times MUST be interpreted in the configured schedule timezone.
-- Scheduled price update jobs MUST only send updates when the current local time is inside the active window.
-- The default active window SHOULD be broad enough to preserve existing behavior unless explicitly configured.
-- Invalid time strings MUST be rejected with a clear error message.
-- If the start time equals the end time, the configuration MUST be rejected to avoid ambiguous behavior.
-- If the start time is later than the end time, the schedule MAY support an overnight window, but the chosen behavior MUST be documented and covered by tests.
+Overnight example in `America/New_York`:
 
-### 3.4 Timezone Support
+```text
+Frequency: 60 minutes
+Window: 21:30-04:00
+Sequence: 21:30, 22:00, 23:00, 00:00, 01:00, 02:00, 03:00, 04:00
+```
 
-- The scheduler MUST use an explicit timezone value.
-- The default timezone SHOULD be `America/New_York` because the bot examples and roadmap focus on US market assets.
-- The timezone value MUST use an IANA timezone name, such as `America/New_York`, `Asia/Hong_Kong`, or `UTC`.
-- Invalid timezone names MUST be rejected at configuration load time or update time.
-- Daylight saving time transitions MUST be handled by the timezone-aware scheduler rather than by manual offset calculations.
+## 4. Trigger Semantics
 
-## 4. Configuration
+For each daily active window while the scheduler is running, subject to the missed-trigger and DST rules below:
 
-The following settings SHOULD be added or formalized:
+1. The first scheduled update MUST occur at `SCHEDULE_START_TIME`.
+2. Subsequent updates MUST occur on the next supported wall-clock boundary for the configured frequency.
+3. If the start time is already a valid recurring boundary, it MUST produce only one update.
+4. A scheduler startup or reschedule MUST NOT cause an arbitrary immediate update. If the current time is after the opening trigger, the next update is the next recurring boundary inside the window.
+5. A missed trigger MUST NOT be replayed as a catch-up update. A delayed callback MAY still represent its original occurrence only when it starts within a documented finite misfire grace period, remains inside the active window, and preserves the at-most-once invariant.
 
-- `SCHEDULE_FREQUENCY_MINUTES`: integer, one of `1`, `5`, `10`, `15`, `30`, or `60`.
-- `SCHEDULE_START_TIME`: string in `HH:MM` format.
-- `SCHEDULE_END_TIME`: string in `HH:MM` format.
-- `SCHEDULE_TIMEZONE`: IANA timezone string.
+A start time is a recurring boundary when:
 
-Dynamic scheduling settings SHOULD be stored in Redis, consistent with the existing `SYMBOL` and `TIMER_INTERVAL` dynamic settings.
+```text
+start_minute % frequency == 0
+```
 
-Environment variables SHOULD provide startup defaults. Redis values SHOULD override environment defaults after dynamic settings are loaded.
+This predicate applies to every supported frequency, including `60`, for which only minute `00` qualifies. Schedule times have minute precision and imply second `00`.
 
-## 5. Command Behavior
+If scheduler startup or rescheduling completes after second `00` of a candidate fire minute, that occurrence is considered missed. The next fire time MUST be strictly later than the registration time; the scheduler MUST NOT send an immediate catch-up update. Any finite scheduler-level misfire grace period MUST be documented and covered by tests without violating the at-most-once invariant in Section 9.
 
-### 5.1 `/set_timer`
+Examples:
 
-- `/set_timer <MINUTES>` MUST continue to be restricted to authorized users.
-- Valid examples:
-    - `/set_timer 1`
-    - `/set_timer 5`
-    - `/set_timer 10`
-    - `/set_timer 15`
-    - `/set_timer 30`
-    - `/set_timer 60`
-- Invalid examples:
-    - `/set_timer 7`
-    - `/set_timer 1440`
-    - `/set_timer abc`
-- On success, the bot MUST confirm the new schedule frequency.
-- On failure, the bot MUST list the supported values.
+```text
+Start 09:33, frequency 15 -> first 09:33, then 09:45
+Start 09:30, frequency 15 -> one update at 09:30, then 09:45
+App starts 10:07 inside a 09:30-16:00 window, frequency 15 -> first update at 10:15
+App reschedules at 09:30:01, frequency 15 -> 09:30 is missed; next update at 09:45
+```
 
-### 5.2 Schedule Window Configuration
+## 5. Window Rules
 
-The implementation SHOULD introduce admin-only commands for updating the daily active window and timezone, unless a simpler existing configuration path is chosen.
+Window comparisons MUST use local time in `SCHEDULE_TIMEZONE`, with seconds and microseconds ignored for membership checks.
 
-Suggested commands:
+- **Same-day window (`start < end`):** allow when `start <= t <= end`.
+- **Equal bounds (`start == end`):** reject as ambiguous.
+- **Overnight window (`start > end`):** allow when `t >= start OR t <= end`.
+- **Inclusive end:** a recurring trigger exactly equal to the end time is allowed.
 
-- `/set_schedule_window <START_HH:MM> <END_HH:MM>`
-- `/set_schedule_timezone <IANA_TIMEZONE>`
+The end time is a filter boundary, not an extra forced trigger. For example, a `09:30-16:05` window with a `60` minute frequency fires at `09:30`, `10:00`, ..., `16:00`; it does not fire again at `16:05`.
 
-The final command names MAY differ, but the implemented UX MUST allow authorized users to update these settings without editing server files.
+Except for the explicit opening trigger at the start time, the window MUST NOT change recurring boundary alignment. A scheduled callback outside the window MUST skip the update and log a message such as `Skipping scheduled price update outside active window`.
 
-### 5.3 `/config_status`
+Manual `/update` requests MUST remain available outside the active window.
 
-The `/config_status` command MUST include the active scheduling settings after this feature is implemented:
+## 6. Timezone Rules
+
+- `SCHEDULE_TIMEZONE` MUST be an IANA timezone name, for example `America/New_York`, `Asia/Hong_Kong`, or `UTC`.
+- The default MUST be `America/New_York`.
+- Invalid timezone names MUST be rejected during configuration load or command validation.
+- The implementation MUST use timezone-aware datetimes and `zoneinfo.ZoneInfo`; it MUST NOT calculate daylight saving offsets manually.
+- If an opening time does not exist during a spring-forward transition, the opening trigger for that local calendar date MUST be skipped. It MUST NOT be shifted to another local time.
+- If a local time is repeated during a fall-back transition, the opening or recurring trigger MUST fire only for the first occurrence (`fold=0`).
+- A repeated local `HH:MM` MUST NOT cause two scheduled updates within the same active-window occurrence.
+- APScheduler and `ZoneInfo` MUST be configured or guarded to enforce these policies; library defaults alone are not a product-level guarantee.
+
+## 7. Configuration and Persistence
+
+| Setting | Type | Allowed values | Default |
+|---|---|---|---|
+| `SCHEDULE_FREQUENCY_MINUTES` | integer | `1`, `5`, `10`, `15`, `30`, `60` | `1` |
+| `SCHEDULE_START_TIME` | string | strict `HH:MM` | `00:00` |
+| `SCHEDULE_END_TIME` | string | strict `HH:MM` | `23:59` |
+| `SCHEDULE_TIMEZONE` | string | valid IANA timezone | `America/New_York` |
+
+Environment variables provide startup defaults. Redis values override those defaults after dynamic settings are loaded.
+
+Dynamic values SHOULD use these Redis keys:
+
+```text
+stocker:settings:schedule_frequency_minutes
+stocker:settings:schedule_start_time
+stocker:settings:schedule_end_time
+stocker:settings:schedule_timezone
+```
+
+### 7.1 Backward Compatibility
+
+The legacy `TIMER_INTERVAL` and Redis `stocker:settings:timer_interval` values are measured in seconds.
+
+- When `SCHEDULE_FREQUENCY_MINUTES` is absent, convert a legacy value using `frequency = timer_interval // 60`.
+- A legacy value MUST be a positive integer, divisible by `60`, and convert to one of the supported frequencies.
+- An invalid legacy environment value MUST be rejected during configuration load.
+- A corrupted persisted Redis value MUST fall back to the applicable validated default and log a warning.
+- A valid new `schedule_frequency_minutes` Redis value MUST take precedence over the legacy Redis key.
+- `schedule_frequency_minutes` is the canonical frequency source.
+- If only a valid legacy Redis value exists, startup MUST convert it and persist the canonical `schedule_frequency_minutes` key.
+- Runtime updates MUST write the canonical key. They MAY dual-write the legacy seconds key for one documented compatibility release, after which legacy writes SHOULD be removed. The rollout plan MUST identify that compatibility release.
+- The legacy key remains a read fallback only while the documented migration period is active.
+
+### 7.2 Atomic Runtime Updates
+
+Changes to frequency, window, or timezone MUST behave atomically from the operator's perspective:
+
+1. Validate the complete candidate configuration without changing persisted settings, in-memory settings, or active jobs.
+2. Capture the previous validated settings and active job configuration.
+3. Persist and activate the candidate settings.
+4. Replace the active scheduler jobs.
+5. If persistence or job replacement fails, restore the previous persisted settings, in-memory settings, and scheduler jobs.
+
+If compensating rollback also fails, the bot MUST log the full failure, report a degraded scheduling state to the requesting admin, and expose enough effective-state information for recovery. `/config_status` MUST report the active effective settings rather than an unactivated candidate.
+
+## 8. Command Behavior
+
+All commands in this section MUST be restricted to authorized users. Invalid input MUST be rejected with a clear explanation and MUST NOT partially change the active settings.
+
+### 8.1 `/set_timer <N>`
+
+- Sets `SCHEDULE_FREQUENCY_MINUTES`.
+- Accepts only `1`, `5`, `10`, `15`, `30`, or `60`.
+- Success response:
+
+```text
+Timer frequency has been updated to X minute(s).
+```
+
+- Invalid input MUST list the supported values.
+
+### 8.2 `/set_schedule_window <HH:MM> <HH:MM>`
+
+- Sets the inclusive daily active window.
+- Supports same-day and overnight windows.
+- Rejects invalid `HH:MM` values and equal start/end values.
+- Success response:
+
+```text
+Schedule window has been updated to START-END TIMEZONE.
+```
+
+### 8.3 `/set_schedule_timezone <IANA_TIMEZONE>`
+
+- Sets the timezone used by the opening trigger, recurring boundaries, and window checks.
+- Success response:
+
+```text
+Schedule timezone has been updated to TIMEZONE.
+```
+
+### 8.4 `/config_status`
+
+The response MUST include the symbol and all scheduling settings:
 
 ```text
 Current Bot Configuration:
 - Symbol: <VALUE>
 - Timer Frequency: <VALUE> minute(s)
-- Schedule Window: <START_HH:MM>-<END_HH:MM>
+- Schedule Window: <START>-<END>
 - Schedule Timezone: <IANA_TIMEZONE>
 ```
 
-## 6. Technical Requirements
+## 9. Scheduler Architecture
 
-- Scheduling logic SHOULD be separated from Telegram command handlers to avoid duplicating reschedule behavior across direct command and conversation flows.
-- The job name SHOULD remain stable, for example `price_update`, so existing job replacement logic remains simple.
-- Rescheduling MUST remove any existing active `price_update` job before registering the new schedule.
-- The scheduler MUST not create duplicate price update jobs after repeated configuration changes.
-- Manual `/update` behavior MUST remain unchanged and MUST continue to work outside the scheduled active window.
-- External provider selection and price formatting MUST remain unchanged.
+The reference design uses up to two named jobs:
 
-## 7. Error Handling
+| Job name | Purpose |
+|---|---|
+| `price_update_open` | Daily opening trigger at `SCHEDULE_START_TIME` when the start is not already a recurring boundary |
+| `price_update_cron` | Recurring wall-clock boundary trigger for the configured frequency |
 
-- Invalid frequency values MUST be rejected before changing persisted settings.
-- Invalid time values MUST be rejected before changing persisted settings.
-- Invalid timezone values MUST be rejected before changing persisted settings.
-- If rescheduling fails after settings are persisted, the error MUST be logged and the bot SHOULD report the failure to the requesting admin.
-- If the app starts with invalid persisted scheduling settings, it SHOULD fall back to safe defaults and log the invalid values.
+An implementation SHOULD use this two-job design because it maps directly to the opening and recurring behaviors. A behaviorally equivalent composite trigger MAY be used if it satisfies every scheduling, replacement, DST, and at-most-once test in this spec.
 
-## 8. Test Requirements
+`price_update_open` is a daily timezone-aware trigger, not a process-lifetime one-shot. It MUST be omitted when the start time is already a valid `price_update_cron` boundary, preventing duplicate updates.
 
-- Unit tests MUST cover frequency validation for valid and invalid values.
-- Unit tests MUST cover `HH:MM` time parsing and invalid time strings.
-- Unit tests MUST cover timezone validation.
-- Unit tests MUST verify the generated schedule boundaries for `1`, `5`, `10`, `15`, `30`, and `60` minute frequencies.
-- Handler tests MUST verify `/set_timer` accepts only supported values and reports errors for unsupported values.
-- Handler tests SHOULD verify schedule window and timezone commands if those commands are implemented.
-- Tests MUST verify that rescheduling replaces the existing job instead of adding duplicates.
+`schedule_price_update()` MUST:
 
-## 9. Validation
+1. Validate the complete candidate configuration.
+2. Build all candidate triggers without changing the active jobs.
+3. Capture enough information to restore the current validated job configuration.
+4. Remove every scheduler job owned by the price-update scheduling service, including `price_update_open`, `price_update_cron`, and legacy `price_update` jobs.
+5. Register either:
+   - The reference jobs, omitting `price_update_open` when the configured start is already a recurring boundary and adding `price_update_cron` with a timezone-aware cron trigger; or
+   - One behaviorally equivalent composite trigger owned by the same service.
+6. Ensure every scheduled callback applies the active-window and DST duplicate checks before sending an update.
+7. Restore the previous job configuration if any candidate job cannot be registered.
+
+`reschedule_price_update()` MUST remove and recreate the full job set. Repeated configuration changes MUST NOT create duplicate jobs.
+
+Scheduling and validation logic SHOULD remain separate from Telegram command handlers so every configuration path uses the same behavior.
+
+For any configured timezone-local date and `HH:MM`, the scheduler MUST send at most one scheduled price update for the same active-window occurrence. This send-level invariant applies even during rescheduling races, scheduler misfires, process recovery, and fall-back DST transitions; merely avoiding duplicate registered jobs is not sufficient.
+
+## 10. Error Handling
+
+| Scenario | Required action |
+|---|---|
+| Unsupported frequency, such as `7` | Reject and list supported values |
+| Invalid time, such as `25:00` | Reject with an `HH:MM` explanation |
+| Invalid timezone | Reject and require a valid IANA name |
+| Equal start and end | Reject because the window is ambiguous |
+| Corrupted persisted settings | Fall back to validated defaults and log a warning |
+| Persistence or reschedule failure | Restore the previous settings and jobs, log the exception, and report the failure to the requesting admin |
+| Compensating rollback failure | Report a degraded scheduling state and expose the active effective state for recovery |
+| Scheduled callback outside the window | Skip and log the reason |
+| Manual `/update` outside the window | Allow the update |
+
+## 11. Test Requirements
+
+Unit and handler tests MUST cover:
+
+- Accepting `1`, `5`, `10`, `15`, `30`, and `60`, and rejecting every unsupported value tested.
+- Strict `HH:MM` parsing and rejection of equal window bounds.
+- Same-day, inclusive-end, and overnight window membership.
+- Valid and invalid IANA timezone names.
+- The recurring boundaries for every supported frequency.
+- An off-boundary start firing once at the opening time and then at the next recurring boundary.
+- An on-boundary start producing only one update.
+- Startup or reschedule inside a window selecting the next boundary without an immediate catch-up update.
+- Rescheduling after second `00` of a boundary minute treating that boundary as missed.
+- Daily recurrence of the opening trigger.
+- Skipping a nonexistent spring-forward opening time without shifting it.
+- Sending only once at the first occurrence of a repeated fall-back local time.
+- Replacement of opening, recurring, and legacy jobs without duplicates.
+- A partial candidate-job registration failure restoring the previous complete job set.
+- Persistence, reschedule, and compensating-rollback failure paths.
+- The send-level at-most-once invariant during rescheduling races and scheduler misfires.
+- `/set_timer`, `/set_schedule_window`, `/set_schedule_timezone`, and `/config_status` responses and authorization.
+- Legacy seconds-to-minutes conversion, precedence, rejection, and corrupted Redis fallback behavior.
+- Manual `/update` remaining independent of the active window.
+
+## 12. Completion Criteria
 
 This feature is complete when:
 
-- Scheduled updates fire on exact wall-clock boundaries for all supported frequencies.
-- Scheduled updates are skipped outside the configured daily active window.
-- The active timezone is explicit and uses an IANA timezone name.
-- Scheduling settings survive application restart through Redis-backed dynamic settings.
-- Admin commands can update the supported scheduling settings.
-- `/config_status` displays the current scheduling settings.
-- Existing manual update behavior still works.
+- Each existing, non-missed daily opening time produces exactly one update when the scheduler is running.
+- Subsequent scheduled updates use exact wall-clock boundaries for all supported frequencies.
+- No timezone-local date and `HH:MM` receives more than one scheduled update for the same active-window occurrence.
+- Scheduled updates outside the inclusive same-day or overnight window are skipped.
+- All schedule calculations use the configured IANA timezone.
+- Scheduling settings survive restart through Redis-backed persistence.
+- Authorized users can update frequency, window, and timezone at runtime.
+- Failed configuration changes restore the previous effective settings and job configuration.
+- Rescheduling cannot leave duplicate or legacy jobs active.
+- `/config_status` displays all effective schedule settings.
+- Manual `/update` behavior remains unchanged.
 - Relevant automated tests pass.
