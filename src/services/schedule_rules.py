@@ -1,4 +1,5 @@
-from datetime import datetime, time
+import re
+from datetime import datetime, time, timezone as datetime_timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.triggers.cron import CronTrigger
@@ -13,6 +14,46 @@ DEFAULT_SCHEDULE_TIMEZONE = "America/New_York"
 
 class ScheduleValidationError(ValueError):
     """Raised when schedule configuration is invalid."""
+
+
+class DSTSafeCronTrigger(CronTrigger):
+    """Cron trigger that skips nonexistent and repeated local wall-clock times."""
+
+    @staticmethod
+    def _wall_clock_components(value: datetime) -> tuple[int, ...]:
+        return (
+            value.year,
+            value.month,
+            value.day,
+            value.hour,
+            value.minute,
+            value.second,
+            value.microsecond,
+        )
+
+    def _is_valid_local_occurrence(self, candidate: datetime) -> bool:
+        localized = candidate.astimezone(self.timezone)
+        if localized.fold != 0:
+            return False
+
+        round_tripped = localized.astimezone(datetime_timezone.utc).astimezone(
+            self.timezone
+        )
+        return (
+            self._wall_clock_components(round_tripped)
+            == self._wall_clock_components(localized)
+            and round_tripped.fold == localized.fold
+        )
+
+    def get_next_fire_time(
+        self,
+        previous_fire_time: datetime | None,
+        now: datetime,
+    ) -> datetime | None:
+        candidate = super().get_next_fire_time(previous_fire_time, now)
+        while candidate is not None and not self._is_valid_local_occurrence(candidate):
+            candidate = super().get_next_fire_time(candidate, candidate)
+        return candidate
 
 
 def supported_frequencies_text() -> str:
@@ -36,16 +77,13 @@ def normalize_frequency(value: int | str) -> int:
 
 
 def normalize_schedule_time(value: str) -> str:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or re.fullmatch(r"[0-9]{2}:[0-9]{2}", value) is None:
         raise ScheduleValidationError("Time must use HH:MM format.")
 
-    parts = value.split(":")
-    if len(parts) != 2 or len(parts[0]) != 2 or len(parts[1]) != 2:
-        raise ScheduleValidationError("Time must use HH:MM format.")
-
+    hour_text, minute_text = value.split(":")
     try:
-        hour = int(parts[0])
-        minute = int(parts[1])
+        hour = int(hour_text)
+        minute = int(minute_text)
     except ValueError as exc:
         raise ScheduleValidationError("Time must use HH:MM format.") from exc
 
@@ -77,7 +115,7 @@ def normalize_timezone(value: str) -> str:
 
     try:
         ZoneInfo(value)
-    except ZoneInfoNotFoundError as exc:
+    except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ScheduleValidationError("Timezone must be a valid IANA timezone name.") from exc
 
     return value
@@ -92,13 +130,36 @@ def frequency_to_cron_minute(frequency_minutes: int | str) -> str:
     return f"*/{frequency}"
 
 
+def is_recurring_boundary(
+    schedule_time: str,
+    frequency_minutes: int | str,
+) -> bool:
+    frequency = normalize_frequency(frequency_minutes)
+    minute = parse_schedule_time(schedule_time).minute
+    return minute % frequency == 0
+
+
 def build_price_update_trigger(
     frequency_minutes: int | str,
     timezone_name: str,
-) -> CronTrigger:
+) -> DSTSafeCronTrigger:
     timezone = ZoneInfo(normalize_timezone(timezone_name))
-    return CronTrigger(
+    return DSTSafeCronTrigger(
         minute=frequency_to_cron_minute(frequency_minutes),
+        second=0,
+        timezone=timezone,
+    )
+
+
+def build_opening_trigger(
+    start_time: str,
+    timezone_name: str,
+) -> DSTSafeCronTrigger:
+    opening_time = parse_schedule_time(start_time)
+    timezone = ZoneInfo(normalize_timezone(timezone_name))
+    return DSTSafeCronTrigger(
+        hour=opening_time.hour,
+        minute=opening_time.minute,
         second=0,
         timezone=timezone,
     )

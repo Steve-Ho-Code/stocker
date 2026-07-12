@@ -168,6 +168,8 @@ The legacy `TIMER_INTERVAL` and Redis `stocker:settings:timer_interval` values a
 - Runtime updates MUST write the canonical key. They MAY dual-write the legacy seconds key for one documented compatibility release, after which legacy writes SHOULD be removed. The rollout plan MUST identify that compatibility release.
 - The legacy key remains a read fallback only while the documented migration period is active.
 
+The release implementing Spec 007 is the single compatibility release for legacy `timer_interval` dual-write and read fallback. The next release MUST remove legacy writes and SHOULD remove the fallback after verifying that the canonical key has been populated in deployed Redis instances.
+
 ### 7.2 Atomic Runtime Updates
 
 Changes to frequency, window, or timezone MUST behave atomically from the operator's perspective:

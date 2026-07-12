@@ -126,32 +126,63 @@ async def get_dynamic_settings() -> dict:
         schedule_rules.normalize_frequency,
     )
     if raw_frequency is None:
+        raw_legacy_frequency = await redis_client.get(
+            "stocker:settings:timer_interval"
+        )
         frequency = _safe_setting(
             "timer_interval",
-            await redis_client.get("stocker:settings:timer_interval"),
+            raw_legacy_frequency,
             frequency,
             _frequency_from_timer_interval,
         )
+        if raw_legacy_frequency is not None:
+            try:
+                migrated_frequency = _frequency_from_timer_interval(
+                    raw_legacy_frequency
+                )
+            except schedule_rules.ScheduleValidationError:
+                pass
+            else:
+                migrated = await redis_client.set(
+                    "stocker:settings:schedule_frequency_minutes",
+                    migrated_frequency,
+                    nx=True,
+                )
+                if migrated:
+                    frequency = migrated_frequency
+                else:
+                    concurrent_frequency = await redis_client.get(
+                        "stocker:settings:schedule_frequency_minutes"
+                    )
+                    frequency = _safe_setting(
+                        "schedule_frequency_minutes",
+                        concurrent_frequency,
+                        settings.SCHEDULE_FREQUENCY_MINUTES,
+                        schedule_rules.normalize_frequency,
+                    )
 
-    start_time = _safe_setting(
-        "schedule_start_time",
-        await redis_client.get("stocker:settings:schedule_start_time"),
-        settings.SCHEDULE_START_TIME,
-        schedule_rules.normalize_schedule_time,
+    raw_start_time = await redis_client.get(
+        "stocker:settings:schedule_start_time"
     )
-    end_time = _safe_setting(
-        "schedule_end_time",
-        await redis_client.get("stocker:settings:schedule_end_time"),
-        settings.SCHEDULE_END_TIME,
-        schedule_rules.normalize_schedule_time,
+    raw_end_time = await redis_client.get("stocker:settings:schedule_end_time")
+    candidate_start_time = (
+        raw_start_time
+        if raw_start_time is not None
+        else settings.SCHEDULE_START_TIME
+    )
+    candidate_end_time = (
+        raw_end_time if raw_end_time is not None else settings.SCHEDULE_END_TIME
     )
     try:
-        start_time, end_time = schedule_rules.validate_schedule_window(start_time, end_time)
+        start_time, end_time = schedule_rules.validate_schedule_window(
+            candidate_start_time,
+            candidate_end_time,
+        )
     except schedule_rules.ScheduleValidationError as exc:
         logger.warning(
-            "Invalid persisted schedule window %s-%s; using fallback %s-%s. Error: %s",
-            start_time,
-            end_time,
+            "Invalid persisted schedule window %r-%r; using fallback %s-%s. Error: %s",
+            raw_start_time,
+            raw_end_time,
             settings.SCHEDULE_START_TIME,
             settings.SCHEDULE_END_TIME,
             exc,
