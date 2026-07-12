@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from ..database import SessionLocal
 from ..models import User
-from ..services import settings_service
+from ..services import schedule_rules, scheduler_service, settings_service
 from ..providers import get_asset_price
 from .. import config
 
@@ -67,6 +67,24 @@ def super_admin_only(func):
             return
         return await func(update, context, *args, **kwargs)
     return wrapper
+
+async def report_schedule_update_error(update: Update, exc: Exception) -> None:
+    if isinstance(exc, settings_service.ScheduleUpdateRollbackError):
+        logger.error(
+            "Schedule update failed and rollback was incomplete: %s",
+            exc,
+            exc_info=True,
+        )
+        await update.message.reply_text(
+            "Schedule update failed and rollback was incomplete. "
+            "Scheduling is degraded; check the logs."
+        )
+        return
+
+    logger.error("Schedule update failed and was restored: %s", exc, exc_info=True)
+    await update.message.reply_text(
+        "Schedule update failed; previous settings remain active."
+    )
 
 @super_admin_only
 async def grant_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -158,8 +176,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Database error registering user {telegram_user.id} on /start: {e}", exc_info=True)
                 await db.rollback()
 
-        timer_interval = config.settings.TIMER_INTERVAL // 60
-        interval_text = f"{timer_interval} minute{'s' if timer_interval != 1 else ''}"
+        timer_frequency = config.settings.SCHEDULE_FREQUENCY_MINUTES
+        interval_text = f"{timer_frequency} minute{'s' if timer_frequency != 1 else ''}"
         await update.message.reply_text(f"Hello! I am a bot that tracks {config.settings.SYMBOL}. I will send updates to the channel every {interval_text}.")
 
 @authorized_users_only
@@ -191,66 +209,122 @@ async def receive_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sets the timer interval for price updates."""
     if not context.args:
-        await update.message.reply_text("Please enter the timer interval in minutes.")
+        await update.message.reply_text(
+            "Please enter the timer frequency in minutes. "
+            f"Supported values: {schedule_rules.supported_frequencies_text()}."
+        )
         return TIMER
 
     try:
-        new_interval = int(context.args[0])
-        if not (0 < new_interval <= config.settings.MAX_TIMER_INTERVAL):
-            await update.message.reply_text(f"Interval must be a positive number less than or equal to {config.settings.MAX_TIMER_INTERVAL}.")
-            return TIMER
-        
-        await settings_service.update_timer_interval(new_interval * 60)
-        
-        # Reschedule the job
-        job_queue = context.job_queue
-        if job_queue:
-            current_jobs = job_queue.get_jobs_by_name('price_update')
-            if current_jobs:
-                current_jobs[0].schedule_removal()
-            job_queue.run_repeating(timer, interval=new_interval * 60, first=0, name='price_update')
+        frequency = schedule_rules.normalize_frequency(context.args[0])
+        await settings_service.update_schedule_frequency_minutes(
+            frequency,
+            job_queue=context.job_queue,
+            callback=timer,
+        )
 
-        await update.message.reply_text(f"Timer has been updated to {new_interval} minutes.")
+        await update.message.reply_text(
+            f"Timer frequency has been updated to {frequency} minute(s)."
+        )
         return ConversationHandler.END
 
-    except (IndexError, ValueError):
-        await update.message.reply_text("Invalid interval. Please provide a number in minutes.")
+    except settings_service.ScheduleUpdateError as exc:
+        await report_schedule_update_error(update, exc)
+        return ConversationHandler.END
+    except (IndexError, schedule_rules.ScheduleValidationError) as exc:
+        await update.message.reply_text(
+            f"Invalid frequency. {exc}"
+        )
         return TIMER
 
 async def receive_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receives the timer from the user."""
     try:
-        new_interval = int(update.message.text)
-        if not (0 < new_interval <= config.settings.MAX_TIMER_INTERVAL):
-            await update.message.reply_text(f"Interval must be a positive number less than or equal to {config.settings.MAX_TIMER_INTERVAL}. Please try again.")
-            return TIMER
+        frequency = schedule_rules.normalize_frequency(update.message.text)
+        await settings_service.update_schedule_frequency_minutes(
+            frequency,
+            job_queue=context.job_queue,
+            callback=timer,
+        )
 
-        await settings_service.update_timer_interval(new_interval * 60)
-
-        # Reschedule the job
-        job_queue = context.job_queue
-        if job_queue:
-            current_jobs = job_queue.get_jobs_by_name('price_update')
-            if current_jobs:
-                current_jobs[0].schedule_removal()
-            job_queue.run_repeating(timer, interval=new_interval * 60, first=0, name='price_update')
-
-        await update.message.reply_text(f"Timer has been updated to {new_interval} minutes.")
+        await update.message.reply_text(
+            f"Timer frequency has been updated to {frequency} minute(s)."
+        )
         return ConversationHandler.END
 
-    except (IndexError, ValueError):
-        await update.message.reply_text("Invalid interval. Please provide a number in minutes.")
+    except settings_service.ScheduleUpdateError as exc:
+        await report_schedule_update_error(update, exc)
+        return ConversationHandler.END
+    except (IndexError, schedule_rules.ScheduleValidationError) as exc:
+        await update.message.reply_text(
+            f"Invalid frequency. {exc}"
+        )
         return TIMER
+
+@authorized_users_only
+async def set_schedule_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sets the daily active window for scheduled price updates."""
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Usage: /set_schedule_window <START_HH:MM> <END_HH:MM>"
+        )
+        return
+
+    try:
+        start_time, end_time = schedule_rules.validate_schedule_window(
+            context.args[0],
+            context.args[1],
+        )
+        await settings_service.update_schedule_window(
+            start_time,
+            end_time,
+            job_queue=context.job_queue,
+            callback=timer,
+        )
+        await update.message.reply_text(
+            f"Schedule window has been updated to {start_time}-{end_time} "
+            f"{config.settings.SCHEDULE_TIMEZONE}."
+        )
+    except settings_service.ScheduleUpdateError as exc:
+        await report_schedule_update_error(update, exc)
+    except schedule_rules.ScheduleValidationError as exc:
+        await update.message.reply_text(f"Invalid schedule window. {exc}")
+
+@authorized_users_only
+async def set_schedule_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sets the timezone used by scheduled price updates."""
+    if len(context.args) != 1:
+        await update.message.reply_text(
+            "Usage: /set_schedule_timezone <IANA_TIMEZONE>"
+        )
+        return
+
+    try:
+        timezone = schedule_rules.normalize_timezone(context.args[0])
+        await settings_service.update_schedule_timezone(
+            timezone,
+            job_queue=context.job_queue,
+            callback=timer,
+        )
+        await update.message.reply_text(
+            f"Schedule timezone has been updated to {timezone}."
+        )
+    except settings_service.ScheduleUpdateError as exc:
+        await report_schedule_update_error(update, exc)
+    except schedule_rules.ScheduleValidationError as exc:
+        await update.message.reply_text(f"Invalid timezone. {exc}")
 
 @authorized_users_only
 async def config_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays the current configuration of the bot."""
     symbol = config.settings.SYMBOL
-    timer_interval = config.settings.TIMER_INTERVAL // 60  # Convert seconds to minutes
     message = (
         f"Current Bot Configuration:\n"
         f"- Symbol: {symbol}\n"
-        f"- Timer Interval: {timer_interval} minute(s)"
+        f"- Timer Frequency: {config.settings.SCHEDULE_FREQUENCY_MINUTES} minute(s)\n"
+        f"- Schedule Window: {config.settings.SCHEDULE_START_TIME}-{config.settings.SCHEDULE_END_TIME}\n"
+        f"- Schedule Timezone: {config.settings.SCHEDULE_TIMEZONE}\n"
+        f"- Scheduling State: {scheduler_service.schedule_state()}"
     )
     await update.message.reply_text(message)
 
@@ -267,4 +341,26 @@ async def timeout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def timer(context: ContextTypes.DEFAULT_TYPE):
     """The function called by the job queue."""
     if isinstance(context.bot, Bot):
+        now = scheduler_service.current_schedule_datetime()
+        schedule = scheduler_service.schedule_for_callback(context.job, now)
+        if schedule is None:
+            logger.info(
+                "Skipping stale or invalid scheduled price update callback: "
+                "job=%s, time=%s",
+                getattr(context.job, "name", None),
+                now,
+            )
+            return
+        if not scheduler_service.should_run_scheduled_update(now, schedule):
+            logger.info(
+                "Skipping scheduled price update outside active window: %s",
+                scheduler_service.schedule_summary(schedule),
+            )
+            return
+        if not await scheduler_service.claim_scheduled_update(now, schedule):
+            logger.info(
+                "Skipping duplicate or unclaimed scheduled price update: %s",
+                scheduler_service.schedule_summary(schedule),
+            )
+            return
         await send_price_update(context.bot)

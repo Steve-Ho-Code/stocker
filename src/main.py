@@ -8,8 +8,10 @@ from telegram.ext import Application, CommandHandler, ConversationHandler, Messa
 from src import config
 from src.bot.handlers import (
     start, manual_update, set_symbol, receive_symbol, 
-    set_timer, receive_timer, timer, cancel, SYMBOL, TIMER, timeout, config_status, grant_admin
+    set_timer, receive_timer, timer, cancel, SYMBOL, TIMER, timeout, config_status,
+    grant_admin, set_schedule_window, set_schedule_timezone
 )
+from src.services import scheduler_service
 from pythonjsonlogger import jsonlogger
 
 # Enable logging
@@ -37,6 +39,8 @@ def main() -> None:
     application.add_handler(CommandHandler("update", manual_update))
     application.add_handler(CommandHandler("config_status", config_status))
     application.add_handler(CommandHandler("grant_admin", grant_admin))
+    application.add_handler(CommandHandler("set_schedule_window", set_schedule_window))
+    application.add_handler(CommandHandler("set_schedule_timezone", set_schedule_timezone))
 
     # Add conversation handlers
     symbol_conv_handler = ConversationHandler(
@@ -63,8 +67,7 @@ def main() -> None:
 
     # Schedule the price update job
     job_queue = application.job_queue
-    if job_queue:
-        job_queue.run_repeating(timer, interval=config.settings.TIMER_INTERVAL, first=0, name='price_update')
+    scheduler_service.schedule_price_update(job_queue, timer)
 
     # Start the bot using run_polling
     application.run_polling(allowed_updates=Update.ALL_TYPES)
