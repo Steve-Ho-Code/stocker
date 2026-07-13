@@ -16,13 +16,14 @@ COPY requirements.txt .
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code into the container
-COPY src/ ./src/
-COPY alembic.ini .
-COPY alembic/ ./alembic/
-
-# Set the user to a non-root user for security
+# Create the non-root user that runs the application
 RUN addgroup --system app && adduser --system --group app
+
+# Copy runtime files with ownership for the non-root application user.
+COPY --chown=app:app src/ ./src/
+COPY --chown=app:app alembic.ini .
+COPY --chown=app:app alembic/ ./alembic/
+
 USER app
 
 # Run main.py when the container launches
