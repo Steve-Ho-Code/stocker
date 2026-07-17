@@ -4,8 +4,10 @@ from typing import Optional, Dict
 from aiocache import cached
 
 from .. import config
+from ._logging import log_provider_failure
 
 logger = logging.getLogger(__name__)
+PROVIDER_NAME = "alpha_vantage"
 
 @cached(ttl=60)
 async def get_asset_price_cached() -> Optional[Dict[str, str]]:
@@ -24,7 +26,11 @@ async def get_asset_price(use_cache: bool = True) -> Optional[Dict[str, str]]:
             data = response.json()
             global_quote = data.get("Global Quote")
             if not global_quote:
-                logger.error(f"API did not return Global Quote. Full response: {data}")
+                logger.error(
+                    "Price provider returned invalid price data: provider=%s.",
+                    PROVIDER_NAME,
+                    extra={"provider": PROVIDER_NAME},
+                )
                 error_msg = data.get("Information") or data.get("Note") or data.get("Error Message") or "Invalid API call or symbol not found."
                 return {"error": error_msg}
             
@@ -34,10 +40,6 @@ async def get_asset_price(use_cache: bool = True) -> Optional[Dict[str, str]]:
                 "change_percent": global_quote.get("10. change percent")
             }
             return price_data
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error occurred: {e}")
-    except httpx.RequestError as e:
-        logger.error(f"An error occurred while requesting data: {e}")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
+    except Exception as exc:
+        log_provider_failure(logger, PROVIDER_NAME, exc)
     return None

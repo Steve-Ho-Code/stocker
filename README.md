@@ -152,7 +152,9 @@ intentionally excluded from Telegram's visible command menu.
 
 ## Logging
 
-The bot writes structured JSON logs to stdout using `python-json-logger`. This works well with Docker logs and log aggregation systems. Change `LOG_LEVEL` in `.env` to adjust verbosity.
+The bot writes structured JSON logs to stdout using `python-json-logger`.
+Credential-bearing query parameters and configured secrets are redacted before
+output. Change `LOG_LEVEL` in `.env` to adjust verbosity.
 
 ## Testing
 
@@ -182,6 +184,7 @@ pytest
 |   |-- services/         # Settings and scheduling services
 |   |-- config.py         # Configuration loading and Redis-backed settings
 |   |-- database.py       # Database session setup
+|   |-- logging_config.py # JSON logging and credential redaction
 |   |-- main.py           # Application entry point
 |   `-- models.py         # SQLAlchemy models
 |-- tests/                # Automated tests
