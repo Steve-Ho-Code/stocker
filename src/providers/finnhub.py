@@ -4,8 +4,10 @@ from typing import Optional, Dict
 from aiocache import cached
 
 from .. import config
+from ._logging import log_provider_failure
 
 logger = logging.getLogger(__name__)
+PROVIDER_NAME = "finnhub"
 
 @cached(ttl=60)
 async def get_asset_price_cached() -> Optional[Dict[str, str]]:
@@ -26,7 +28,11 @@ async def get_asset_price(use_cache: bool = True) -> Optional[Dict[str, str]]:
             # Finnhub returns 'c' for current price. If it's missing or 0, the symbol might be invalid.
             current_price = data.get("c")
             if current_price is None or current_price == 0:
-                logger.error(f"Finnhub API returned invalid price data. Full response: {data}")
+                logger.error(
+                    "Price provider returned invalid price data: provider=%s.",
+                    PROVIDER_NAME,
+                    extra={"provider": PROVIDER_NAME},
+                )
                 return {"error": "Invalid API call or symbol not found on Finnhub."}
             
             price_data = {
@@ -35,10 +41,6 @@ async def get_asset_price(use_cache: bool = True) -> Optional[Dict[str, str]]:
                 "change_percent": str(data.get("dp", "0.0"))
             }
             return price_data
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error occurred in Finnhub provider: {e}")
-    except httpx.RequestError as e:
-        logger.error(f"An error occurred while requesting data from Finnhub: {e}")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred in Finnhub provider: {e}")
+    except Exception as exc:
+        log_provider_failure(logger, PROVIDER_NAME, exc)
     return None

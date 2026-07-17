@@ -12,18 +12,25 @@ from src.bot.handlers import (
     grant_admin, set_schedule_window, set_schedule_timezone
 )
 from src.services import scheduler_service
-from pythonjsonlogger import jsonlogger
+from src.logging_config import configure_logging
 
-# Enable logging
 logger = logging.getLogger(__name__)
-logHandler = logging.StreamHandler()
-formatter = jsonlogger.JsonFormatter()
-logHandler.setFormatter(formatter)
-logger.addHandler(logHandler)
-logger.setLevel(config.settings.LOG_LEVEL)
 
 def main() -> None:
     """Starts the bot."""
+
+    configure_logging(
+        level=config.settings.LOG_LEVEL,
+        sensitive_values=(
+            config.settings.API_TOKEN,
+            config.settings.FINNHUB_API_KEY,
+            config.settings.ALPHA_VANTAGE_API_KEY,
+            config.settings.DATABASE_URL,
+            config.settings.REDIS_URL,
+        ),
+    )
+    # HTTPX INFO records contain request URLs; avoid recording them at all.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     # Create a new event loop to run the async function
     loop = asyncio.new_event_loop()
