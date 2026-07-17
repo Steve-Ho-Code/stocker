@@ -49,7 +49,7 @@ At minimum, set `API_TOKEN`, `CHANNEL_ID`, `SUPER_ADMIN_TELEGRAM_ID`, and the AP
 Docker Compose starts the bot, PostgreSQL, and Redis:
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
 Apply database migrations the first time you start a new database:
@@ -58,7 +58,26 @@ Apply database migrations the first time you start a new database:
 docker exec -it stocker_bot alembic upgrade head
 ```
 
-### 4. Run without Docker
+### 4. Synchronize the Telegram command menu
+
+After deployment, synchronize the visible command menu manually:
+
+```bash
+docker compose exec bot python -m src.scripts.sync_bot_commands
+```
+
+When command definitions have changed, rebuild the image before synchronizing:
+
+```bash
+docker compose up -d --build
+docker compose exec bot python -m src.scripts.sync_bot_commands
+```
+
+The synchronization is intentionally separate from normal bot startup and the
+Docker command, so container restarts do not make unnecessary Telegram API
+requests. Run it only after deployment or after changing command definitions.
+
+### 5. Run without Docker
 
 Install development dependencies:
 
@@ -128,6 +147,9 @@ Manual `/update` commands are not restricted by the schedule window.
 | `/grant_admin <user_id>` | Super admin | Grants admin privileges to a registered user. The target user must run `/start` at least once first. |
 | `/cancel` | Anyone in prompt | Cancels an active interactive prompt. |
 
+`/grant_admin` and `/cancel` remain available to their existing handlers but are
+intentionally excluded from Telegram's visible command menu.
+
 ## Logging
 
 The bot writes structured JSON logs to stdout using `python-json-logger`. This works well with Docker logs and log aggregation systems. Change `LOG_LEVEL` in `.env` to adjust verbosity.
@@ -154,8 +176,9 @@ pytest
 |-- alembic/              # Alembic migration scripts
 |-- docs/                 # Project documentation, specs, plans, and reviews
 |-- src/
-|   |-- bot/              # Telegram command handlers
+|   |-- bot/              # Telegram handlers and command-menu definitions
 |   |-- providers/        # Financial data providers
+|   |-- scripts/          # Manually executed maintenance scripts
 |   |-- services/         # Settings and scheduling services
 |   |-- config.py         # Configuration loading and Redis-backed settings
 |   |-- database.py       # Database session setup
