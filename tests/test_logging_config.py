@@ -110,3 +110,58 @@ def test_configure_logging_redacts_propagated_child_logger_records(
     assert REDACTED in rendered
     assert payload["provider"] == "finnhub"
     assert payload["http_status"] == 502
+
+
+def test_configure_logging_writes_redacted_rotating_local_files(tmp_path):
+    secret = "local-file-secret"
+    log_path = tmp_path / "nested" / "stocker.log"
+    root_logger = logging.getLogger()
+    child_logger = logging.getLogger("src.local_file_test")
+    previous_root_handlers = root_logger.handlers[:]
+    previous_root_level = root_logger.level
+    previous_child_handlers = child_logger.handlers[:]
+    previous_child_level = child_logger.level
+    previous_child_propagate = child_logger.propagate
+
+    try:
+        configure_logging(
+            level=logging.INFO,
+            sensitive_values=(secret,),
+            stream=io.StringIO(),
+            file_path=log_path,
+            file_max_bytes=180,
+            file_backup_count=2,
+        )
+        child_logger.handlers.clear()
+        child_logger.setLevel(logging.NOTSET)
+        child_logger.propagate = True
+
+        for index in range(10):
+            child_logger.info(
+                "Local log entry %s contains token=%s",
+                index,
+                secret,
+            )
+
+        installed_handlers = root_logger.handlers[:]
+        for handler in installed_handlers:
+            handler.flush()
+            handler.close()
+    finally:
+        root_logger.handlers[:] = previous_root_handlers
+        root_logger.setLevel(previous_root_level)
+        child_logger.handlers[:] = previous_child_handlers
+        child_logger.setLevel(previous_child_level)
+        child_logger.propagate = previous_child_propagate
+
+    log_files = sorted(log_path.parent.glob("stocker.log*"))
+    assert log_path in log_files
+    assert len(log_files) > 1
+
+    rendered = "".join(
+        log_file.read_text(encoding="utf-8") for log_file in log_files
+    )
+    assert secret not in rendered
+    assert REDACTED in rendered
+    for line in rendered.splitlines():
+        json.loads(line)

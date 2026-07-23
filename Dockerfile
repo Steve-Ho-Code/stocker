@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create the non-root user that runs the application
 RUN addgroup --system app && adduser --system --group app
+RUN mkdir -p /app/logs && chown app:app /app/logs
 
 # Copy runtime files with ownership for the non-root application user.
 COPY --chown=app:app src/ ./src/

@@ -2,7 +2,7 @@ import logging
 
 import redis.asyncio as redis
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from .services import schedule_rules
 
@@ -29,6 +29,9 @@ def _frequency_from_timer_interval(value: str | int) -> int:
 class Settings(BaseSettings):
     # Logging Configuration
     LOG_LEVEL: str = "INFO"
+    LOG_FILE: str = "logs/stocker.log"
+    LOG_MAX_BYTES: int = Field(default=10 * 1024 * 1024, gt=0)
+    LOG_BACKUP_COUNT: int = Field(default=5, gt=0)
 
     # Telegram Bot Configuration
     API_TOKEN: str

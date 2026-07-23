@@ -118,6 +118,9 @@ Static startup configuration is loaded from environment variables, including `.e
 | `SCHEDULE_END_TIME` | No | Startup default for the daily active window end in `HH:MM` format. Defaults to `23:59`. |
 | `SCHEDULE_TIMEZONE` | No | IANA timezone used for schedule evaluation. Defaults to `America/New_York`. |
 | `LOG_LEVEL` | No | Logging level such as `DEBUG`, `INFO`, `WARNING`, or `ERROR`. Defaults to `INFO`. |
+| `LOG_FILE` | No | Local JSON log path. Defaults to `logs/stocker.log`. |
+| `LOG_MAX_BYTES` | No | Maximum size of one local log file before rotation. Defaults to `10485760` (10 MB). |
+| `LOG_BACKUP_COUNT` | No | Number of rotated local log files to retain. Defaults to `5`. |
 
 `TIMER_INTERVAL` is still accepted as a legacy startup setting in seconds when `SCHEDULE_FREQUENCY_MINUTES` is not set. New deployments should use `SCHEDULE_FREQUENCY_MINUTES`.
 
@@ -152,9 +155,13 @@ intentionally excluded from Telegram's visible command menu.
 
 ## Logging
 
-The bot writes structured JSON logs to stdout using `python-json-logger`.
-Credential-bearing query parameters and configured secrets are redacted before
-output. Change `LOG_LEVEL` in `.env` to adjust verbosity.
+The bot writes structured JSON logs to stdout and to `logs/stocker.log` using
+`python-json-logger`. Local logs rotate at 10 MB and retain five backups by
+default. Docker Compose mounts the `logs` directory from the host so the files
+survive container replacement. Credential-bearing query parameters and
+configured secrets are redacted from both outputs. Change `LOG_LEVEL`,
+`LOG_FILE`, `LOG_MAX_BYTES`, or `LOG_BACKUP_COUNT` in `.env` to customize
+logging.
 
 ## Testing
 

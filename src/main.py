@@ -21,6 +21,9 @@ def main() -> None:
 
     configure_logging(
         level=config.settings.LOG_LEVEL,
+        file_path=config.settings.LOG_FILE,
+        file_max_bytes=config.settings.LOG_MAX_BYTES,
+        file_backup_count=config.settings.LOG_BACKUP_COUNT,
         sensitive_values=(
             config.settings.API_TOKEN,
             config.settings.FINNHUB_API_KEY,

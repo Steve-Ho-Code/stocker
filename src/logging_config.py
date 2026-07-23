@@ -4,6 +4,8 @@ import logging
 import re
 import sys
 from collections.abc import Iterable
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import TextIO
 
 from pythonjsonlogger import jsonlogger
@@ -97,14 +99,31 @@ def configure_logging(
     level: str | int,
     sensitive_values: Iterable[object] = (),
     stream: TextIO | None = None,
+    file_path: str | Path | None = None,
+    file_max_bytes: int = 10 * 1024 * 1024,
+    file_backup_count: int = 5,
 ) -> None:
-    """Install one protected root handler for application and library logs."""
-    handler = logging.StreamHandler(sys.stdout if stream is None else stream)
-    handler.setFormatter(
-        RedactingJsonFormatter(sensitive_values=sensitive_values)
+    """Install protected console and optional rotating-file root handlers."""
+    formatter = RedactingJsonFormatter(sensitive_values=sensitive_values)
+    console_handler = logging.StreamHandler(
+        sys.stdout if stream is None else stream
     )
+    console_handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
-    root_logger.addHandler(handler)
+    root_logger.addHandler(console_handler)
+
+    if file_path is not None:
+        log_path = Path(file_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_path,
+            maxBytes=file_max_bytes,
+            backupCount=file_backup_count,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
     root_logger.setLevel(level)

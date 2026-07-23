@@ -7,9 +7,9 @@ from telegram import Bot
 
 from src import config
 from src.bot.command_menu import BOT_COMMANDS
+from src.logging_config import configure_logging
 
 
-logging.basicConfig(level=logging.INFO)
 # HTTPX request logs include the Bot API URL, which contains the bot token.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -42,4 +42,17 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    configure_logging(
+        level=config.settings.LOG_LEVEL,
+        file_path=config.settings.LOG_FILE,
+        file_max_bytes=config.settings.LOG_MAX_BYTES,
+        file_backup_count=config.settings.LOG_BACKUP_COUNT,
+        sensitive_values=(
+            config.settings.API_TOKEN,
+            config.settings.FINNHUB_API_KEY,
+            config.settings.ALPHA_VANTAGE_API_KEY,
+            config.settings.DATABASE_URL,
+            config.settings.REDIS_URL,
+        ),
+    )
     asyncio.run(main())
